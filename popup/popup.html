@@ -1,0 +1,139 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+    <link rel="stylesheet" href="./popup.css">
+  </head>
+  <body>
+    <main class="popup-shell">
+      <header class="hero">
+        <div class="hero-brand">
+          <img class="mark" src="../icons/icon128.png" alt="" aria-hidden="true">
+          <h1 data-i18n="appName"></h1>
+        </div>
+        <button id="add-current" class="add-current-button" type="button" data-i18n="addCurrentOrigin"></button>
+        <button id="open-settings" class="settings-button" type="button" data-i18n-aria-label="openSettings" data-i18n-title="openSettings">⚙</button>
+      </header>
+      <section class="rules-panel">
+        <div class="section-heading">
+          <p id="status" class="status" role="status" aria-live="polite"></p>
+        </div>
+        <div id="rules-toolbar" class="rules-toolbar" hidden></div>
+        <div id="rules-list" class="rules-list" data-view="home"></div>
+        <section id="settings-view" class="settings-view" data-view="settings" hidden>
+          <div class="detail-nav">
+            <button id="back-from-settings" class="back-button" type="button" data-i18n="backToRules"></button>
+            <p class="label" data-i18n="settingsTitle"></p>
+          </div>
+          <button id="language-switch" class="language-switch-button" type="button" data-i18n-aria-label="languageSwitchLabel" data-i18n-title="languageSwitchLabel">
+            <span class="language-switch-label" data-i18n="languageSwitchZh"></span>
+            <span class="language-switch-label" data-i18n="languageSwitchEn"></span>
+          </button>
+          <input id="settings-import-file" type="file" accept=".json,application/json" hidden>
+          <div id="global-advanced-panel" class="global-advanced-slot"></div>
+        </section>
+        <section id="detail-view" class="detail-view" data-view="detail" hidden>
+          <div class="detail-nav">
+            <button id="back-to-rules" class="back-button" type="button" data-i18n="backToRules"></button>
+            <p class="label detail-nav-title" data-i18n="detailTitle"></p>
+          </div>
+          <div class="detail-heading">
+            <h2 id="detail-origin"></h2>
+            <p id="detail-status" class="detail-status" role="status" aria-live="polite" data-i18n-aria-label="detailStatusLabel"></p>
+          </div>
+          <div class="detail-scroll" tabindex="0">
+            <div id="detail-content"></div>
+          </div>
+        </section>
+      </section>
+
+    </main>
+
+    <template id="rule-row-template">
+      <div class="rule-row">
+        <span class="rule-status-dot"></span>
+        <button class="rule-body" type="button">
+          <span class="rule-row-copy">
+            <span class="rule-title"></span>
+            <span class="rule-url"></span>
+            <span class="rule-summary"></span>
+            <span class="rule-next-startup"></span>
+          </span>
+        </button>
+        <button class="rule-state-switch" type="button"></button>
+        <button class="row-action" type="button" data-i18n="configureRule"></button>
+      </div>
+    </template>
+
+    <template id="rule-detail-template">
+      <article class="rule-detail-panel">
+        <section class="rule-fields-section">
+          <div class="rule-fields-list">
+            <div class="rule-title-row">
+              <div class="rule-title-slot"></div>
+              <div class="rule-scope-slot"></div>
+            </div>
+            <div class="rule-url-row"></div>
+          </div>
+        </section>
+
+        <section class="open-target-section" aria-labelledby="open-target-title">
+          <div class="open-target-row">
+            <span id="open-target-title" class="open-target-title" data-i18n="openTargetTitle"></span>
+            <div class="open-target-segmented"></div>
+          </div>
+          <div class="latest-example-slot"></div>
+          <button class="secondary-button run-now-button" type="button" data-i18n="runNow"></button>
+        </section>
+
+        <section class="startup-logic-section" aria-labelledby="startup-logic-title">
+          <div class="logic-section-heading">
+            <span id="startup-logic-title" data-i18n="startupLogicTitle"></span>
+          </div>
+          <p class="logic-empty" data-i18n="startupLogicEmpty"></p>
+          <div class="configured-logic-list"></div>
+        </section>
+
+        <section class="add-logic-section" aria-labelledby="add-startup-logic-title">
+          <div class="logic-section-heading">
+            <span id="add-startup-logic-title" data-i18n="addStartupLogic"></span>
+          </div>
+          <div class="available-logic-list"></div>
+        </section>
+
+        <section class="management-row">
+          <span data-i18n="manageRule"></span>
+          <button class="secondary-button remove-rule" type="button" data-i18n="removeRule"></button>
+        </section>
+
+      </article>
+    </template>
+
+    <template id="logic-card-template">
+      <section class="logic-card">
+        <div class="logic-card-heading">
+          <div>
+            <div class="logic-label-row">
+              <p class="logic-label"></p>
+            </div>
+            <p class="logic-summary"></p>
+          </div>
+          <button class="text-button logic-remove-icon remove-logic" type="button" data-i18n-aria-label="removeStartupLogic" data-i18n-title="removeStartupLogic">×</button>
+        </div>
+        <div class="logic-controls"></div>
+      </section>
+    </template>
+
+    <template id="time-template">
+      <div class="time-row">
+        <input class="time-input" type="time">
+        <button class="icon-button remove-time" type="button" data-i18n="removeTime"></button>
+        <p class="field-error"></p>
+      </div>
+    </template>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

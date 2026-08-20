@@ -1,0 +1,12 @@
+{
+  "name": "tabwake",
+  "version": "1.0.1",
+  "private": true,
+  "description": "TabWake browser extension: manage saved site rules from the toolbar popup and open or focus them by startup or timed strategies.",
+  "type": "module",
+  "scripts": {
+    "package:chrome": "node scripts/package-extension.js chrome",
+    "package:edge": "node scripts/package-extension.js edge",
+    "package:stores": "node scripts/package-extension.js stores"
+  }
+}

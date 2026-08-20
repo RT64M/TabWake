@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "TabWake"
+  },
+  "extensionDescription": {
+    "message": "Manage multiple sites from the toolbar popup and open or focus them by startup or timed rules."
+  }
+}

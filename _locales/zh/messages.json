@@ -1,0 +1,8 @@
+{
+  "extensionName": {
+    "message": "TabWake"
+  },
+  "extensionDescription": {
+    "message": "在工具栏弹窗中管理多个网站，并按启动或定时策略自动打开或聚焦。"
+  }
+}
