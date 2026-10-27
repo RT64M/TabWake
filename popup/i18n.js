@@ -85,6 +85,9 @@ const MESSAGES = {
       "导出为单个文件，或导入文件在不同浏览器和设备之间迁移设置。",
     settingsExport: "导出备份",
     settingsImport: "导入设置",
+    latestPermissionMissing: "缺少网站访问权限，自动追踪将打开固定网址。",
+    latestRestorePermission: "恢复网站权限",
+    settingsImportDiscardedWarning: "已跳过 {count} 条无效或重复规则，请检查原文件。",
     settingsImportPreviewTitle: "导入预览",
     settingsImportRuleCount: "文件内规则：{count}",
     settingsImportReplaceSummary:
@@ -274,6 +277,9 @@ const MESSAGES = {
       "Export one file, or import a file to move settings between browsers and devices.",
     settingsExport: "Export backup",
     settingsImport: "Import settings",
+    latestPermissionMissing: "Site permission is missing. Auto-update will open the saved URL.",
+    latestRestorePermission: "Restore site permission",
+    settingsImportDiscardedWarning: "Skipped {count} invalid or duplicate rules. Check the source file.",
     settingsImportPreviewTitle: "Import preview",
     settingsImportRuleCount: "Rules in file: {count}",
     settingsImportReplaceSummary:
@@ -310,9 +316,9 @@ const MESSAGES = {
     paginationPrevious: "Previous",
     paginationNext: "Next",
     paginationStatus: "Page {page} / {total}",
-    durationMinutes: "{minutes} minutes",
-    durationHours: "{hours} hours",
-    durationHoursMinutes: "{hours} hours {minutes} minutes",
+    durationMinutes: "{minutes} minute{minutePlural}",
+    durationHours: "{hours} hour{hourPlural}",
+    durationHoursMinutes: "{hours} hour{hourPlural} {minutes} minute{minutePlural}",
     openTargetTitle: "Open",
     openTargetOrigin: "Saved URL",
     openTargetLatestContent: "Auto-update",
@@ -386,6 +392,7 @@ const MESSAGES = {
 };
 
 export function message(key, substitutions = {}) {
+  substitutions = { minutePlural: Number(substitutions.minutes) === 1 ? "" : "s", hourPlural: Number(substitutions.hours) === 1 ? "" : "s", ...substitutions };
   const template = MESSAGES[activeLanguage][key] || MESSAGES.en[key] || key;
 
   return Object.entries(substitutions).reduce(

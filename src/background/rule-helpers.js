@@ -1,5 +1,7 @@
+import { getRuleTargetUrl } from "../url-utils.js";
 import {
   createLatestContentRuntimeCacheFingerprint,
+  defaultStorage,
   DEFAULT_DAILY_STARTUP_IDLE_MINUTES,
   decodeAlarmPart,
   getCountdownAlarmPayload,
@@ -19,8 +21,8 @@ import {
   STARTUP_MODE_PRIORITY,
   STARTUP_MODES,
   STARTUP_TRIGGER_TYPES,
-  browserWindowStartupRulesEnabledByStorage,
-  withRuleMutationLock,
+  withLatestCacheLock,
+  windowStartupRuleCache,
 } from "./state.js";
 
 
@@ -83,18 +85,7 @@ function getLocalTimeKey(date = new Date()) {
   return `${hours}:${minutes}`;
 }
 
-function markDailyStartup(rule, today) {
-  return {
-    ...rule,
-    lastRuns: {
-      ...rule.lastRuns,
-      dailyStartupDate: today,
-      dailyTimes: {
-        ...(rule.lastRuns?.dailyTimes || {}),
-      },
-    },
-  };
-}
+
 
 function getDailyStartupIdleMinutes() {
   return DEFAULT_DAILY_STARTUP_IDLE_MINUTES;
@@ -207,21 +198,21 @@ async function refreshBrowserWindowStartupRuleCache(storage) {
 
   const { rules } = await storage.loadSettings();
   const hasRule = hasEnabledBrowserWindowStartupRule(rules);
-  browserWindowStartupRulesEnabledByStorage.set(storage, hasRule);
+  windowStartupRuleCache.set(storage, hasRule);
 
   return hasRule;
 }
 
 async function hasBrowserWindowStartupRules(storage) {
-  if (browserWindowStartupRulesEnabledByStorage.has(storage)) {
-    return browserWindowStartupRulesEnabledByStorage.get(storage);
+  if (windowStartupRuleCache.has(storage)) {
+    return windowStartupRuleCache.get(storage);
   }
 
   return refreshBrowserWindowStartupRuleCache(storage);
 }
 
 function invalidateBrowserWindowStartupRuleCache(storage) {
-  browserWindowStartupRulesEnabledByStorage.delete(storage);
+  windowStartupRuleCache.delete(storage);
 }
 
 // 运行时缓存按配置指纹累积，删除规则或改配置后旧条目不会自己消失。
@@ -236,54 +227,19 @@ export async function pruneLatestContentRuntimeCache({
     return "runtime-cache-unavailable";
   }
 
-  let cache;
-
-  try {
-    cache = await storage.loadLatestContentRuntimeCache();
-  } catch {
-    return "runtime-cache-unavailable";
-  }
-
-  const cachedFingerprints = Object.keys(cache);
-
-  if (!cachedFingerprints.length) {
-    return "runtime-cache-empty";
-  }
-
-  const { rules } = await storage.loadSettings();
-  const liveFingerprints = new Set(
-    rules
-      .map((rule) =>
-        createLatestContentRuntimeCacheFingerprint({
-          targetUrl: getRuleTargetUrl(rule),
-          latestExampleUrl: rule.latestExampleUrl,
-          updatePartRange: rule.updatePartRange,
-          expectedNextExampleUrl: getSafeExpectedNextExampleUrl(rule),
-        })
-      )
-      .filter(Boolean)
-  );
-
-  const staleFingerprints = cachedFingerprints.filter(
-    (fingerprint) => !liveFingerprints.has(fingerprint)
-  );
-
-  if (!staleFingerprints.length) {
-    return "runtime-cache-current";
-  }
-
-  return withRuleMutationLock(async () => {
-    // 锁内重读，避免与并发的缓存推进互相覆盖。
-    const freshCache = await storage.loadLatestContentRuntimeCache();
-
-    await storage.saveLatestContentRuntimeCache(
-      Object.fromEntries(
-        Object.entries(freshCache).filter(([fingerprint]) =>
-          liveFingerprints.has(fingerprint)
-        )
-      )
-    );
-
+  return withLatestCacheLock(async () => {
+    let cache;
+    try { cache = await storage.loadLatestContentRuntimeCache(); }
+    catch { return "runtime-cache-unavailable"; }
+    if (!Object.keys(cache).length) return "runtime-cache-empty";
+    const { rules } = await storage.loadSettings();
+    const liveFingerprints = new Set(rules.map(rule => createLatestContentRuntimeCacheFingerprint({
+      targetUrl: getRuleTargetUrl(rule), latestExampleUrl: rule.latestExampleUrl,
+      updatePartRange: rule.updatePartRange, expectedNextExampleUrl: getSafeExpectedNextExampleUrl(rule),
+    })).filter(Boolean));
+    const entries = Object.entries(cache).filter(([fingerprint]) => liveFingerprints.has(fingerprint));
+    if (entries.length === Object.keys(cache).length) return "runtime-cache-current";
+    await storage.saveLatestContentRuntimeCache(Object.fromEntries(entries));
     return "runtime-cache-pruned";
   });
 }
@@ -356,9 +312,7 @@ function getIsoTimestamp(date) {
   return new Date(date).toISOString();
 }
 
-function getRuleTargetUrl(rule) {
-  return rule.targetUrl || rule.origin;
-}
+
 
 function isUrlWithinRuleTargetScope(url, rule) {
   const targetUrl = getRuleTargetUrl(rule);
@@ -415,7 +369,6 @@ export {
   invalidateBrowserWindowStartupRuleCache,
   isDailyAlarmDeliveryOnTime,
   isUrlWithinRuleTargetScope,
-  markDailyStartup,
   normalizeStartupMode,
   parseAlarmName,
   refreshBrowserWindowStartupRuleCache,

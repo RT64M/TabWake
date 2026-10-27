@@ -3,7 +3,7 @@ import {
   normalizeOrigin,
   normalizeTargetUrl,
   rulesMatchTarget,
-} from "./storage.js";
+} from "./url-utils.js";
 
 function getPathSegments(url) {
   return new URL(url).pathname.split("/").filter(Boolean);
@@ -406,6 +406,10 @@ export function detectUpdatePartRange(url) {
     return null;
   }
 
+  if (/^\d+$/.test(segments.at(-1)) && segments.length > 1 &&
+      !/\d/.test(segments.at(-2))) {
+    return { startIndex: segments.length - 1, length: 1 };
+  }
   const start = getLatestUpdateStartIndex(segments);
 
   if (start >= 0) {

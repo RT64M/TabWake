@@ -53,6 +53,7 @@ function createSettingsImportPreviewState(preview, currentRules, message) {
       focusScopeMode: focusScopeModeLabel,
       rulesPerPage: settingsState.rulesPerPage.value,
     }),
+    discardedWarning: preview.meta?.discardedRuleCount ? message("settingsImportDiscardedWarning", { count: preview.meta.discardedRuleCount }) : "",
     countdownWarning: preview.meta?.disabledCountdownCount
       ? message("settingsImportCountdownWarning", {
           count: preview.meta.disabledCountdownCount,

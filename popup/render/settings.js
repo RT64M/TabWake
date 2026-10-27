@@ -87,6 +87,13 @@ export function createSettingsRenderer({
         settingsSummary
       );
 
+      if (transfer.preview.discardedWarning) {
+        const warning = document.createElement("p");
+        warning.className = "field-error";
+        warning.setAttribute("role", "alert");
+        warning.textContent = transfer.preview.discardedWarning;
+        preview.append(warning);
+      }
       if (transfer.preview.countdownWarning) {
         const warning = document.createElement("p");
         warning.className = "settings-import-warning";

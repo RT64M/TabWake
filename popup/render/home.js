@@ -3,7 +3,7 @@ import {
   markRuleDailyStartupHandledOnActivation,
   upsertRule,
 } from "../../src/storage.js";
-import { formatRuleUrlForDisplay } from "../popup-view.js";
+import { formatRuleUrlForDisplay } from "../view/shared.js";
 import { getRuleTargetUrl } from "../popup-helpers.js";
 
 export function createHomeRenderer({

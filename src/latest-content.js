@@ -3,7 +3,7 @@ import {
   normalizeOrigin,
   normalizeTargetUrl,
   urlsMatch,
-} from "./storage.js";
+} from "./url-utils.js";
 import {
   chooseLatestUrlCandidate,
   chooseLatestUrlCandidateByRange,
@@ -141,20 +141,48 @@ export function findLatestContentUrlFromSitemap({
   return chooseLatestUrlCandidate([...new Set(candidates)], latestExampleUrl, targetUrl);
 }
 
-async function fetchWithTimeout(fetchImpl, url, timeoutMs, init = {}) {
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || !globalThis.AbortController) {
-    return fetchImpl(url, init);
-  }
+export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 
+async function fetchWithTimeout(fetchImpl, url, timeoutMs, init = {}, readBody = false) {
+  if (!(timeoutMs > 0)) throw new Error("Fetch budget exhausted");
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => {
-    controller.abort();
-  }, timeoutMs);
-
+  let reader;
+  let response;
+  let timeoutId;
+  const operation = (async () => {
+    response = await fetchImpl(url, { ...init, signal: controller.signal });
+    if (!readBody || !response?.ok) {
+      response?.body?.cancel().catch(() => {});
+      return response;
+    }
+    // A non-streaming response cannot enforce the byte limit while receiving.
+    if (!response.body?.getReader) throw new Error("Streaming response required");
+    reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_RESPONSE_BYTES) throw new Error("Response too large");
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return { ok: response.ok, status: response.status, text: async () => text };
+  })();
   try {
-    return await fetchImpl(url, { ...init, signal: controller.signal });
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timeoutId = setTimeout(() => {
+        controller.abort();
+        reader?.cancel().catch(() => {});
+        reject(new Error("Fetch timed out"));
+      }, timeoutMs);
+    })]);
   } finally {
     clearTimeout(timeoutId);
+    controller.abort();
+    reader?.cancel().catch(() => {});
   }
 }
 
@@ -172,12 +200,13 @@ export async function resolveLatestContentUrl(input, options = {}) {
       ? options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS
       : input.fetchTimeoutMs ?? options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS;
 
-  if (!fetchImpl) {
-    return targetUrl;
-  }
+  if (!fetchImpl) return targetUrl;
+  const totalBudget = typeof input === "string" ? options.totalFetchBudgetMs : input.totalFetchBudgetMs ?? options.totalFetchBudgetMs;
+  const deadline = Date.now() + Math.min(totalBudget ?? DEFAULT_TOTAL_FETCH_BUDGET_MS, DEFAULT_TOTAL_FETCH_BUDGET_MS);
+  const remainingTimeout = () => Math.min(fetchTimeoutMs, Math.max(0, deadline - Date.now()));
 
   try {
-    const homeResponse = await fetchWithTimeout(fetchImpl, targetUrl, fetchTimeoutMs);
+    const homeResponse = await fetchWithTimeout(fetchImpl, targetUrl, remainingTimeout(), {}, true);
 
     if (homeResponse?.ok) {
       const latestUrl = findLatestContentUrl({
@@ -197,7 +226,7 @@ export async function resolveLatestContentUrl(input, options = {}) {
 
   try {
     const sitemapUrl = new URL("sitemap.xml", origin).href;
-    const sitemapResponse = await fetchWithTimeout(fetchImpl, sitemapUrl, fetchTimeoutMs);
+    const sitemapResponse = await fetchWithTimeout(fetchImpl, sitemapUrl, remainingTimeout(), {}, true);
 
     if (sitemapResponse?.ok) {
       return (
@@ -318,7 +347,7 @@ export async function resolveLatestContentUrlByRange(input, options = {}) {
   const fetchStartedAt = nowImpl();
   const getRequestTimeoutMs = () => {
     const elapsedMs = Math.max(0, nowImpl() - fetchStartedAt);
-    const remainingMs = Math.max(0, totalFetchBudgetMs - elapsedMs);
+    const remainingMs = Math.max(0, Math.min(totalFetchBudgetMs, DEFAULT_TOTAL_FETCH_BUDGET_MS) - elapsedMs);
 
     return Math.min(fetchTimeoutMs, remainingMs);
   };
@@ -350,7 +379,7 @@ export async function resolveLatestContentUrlByRange(input, options = {}) {
         return current;
       }
 
-      const response = await fetchWithTimeout(fetchImpl, slice.prefixUrl, prefixTimeoutMs);
+      const response = await fetchWithTimeout(fetchImpl, slice.prefixUrl, prefixTimeoutMs, {}, true);
 
       if (response?.ok) {
         const candidates = collectSameOriginCandidates(

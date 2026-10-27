@@ -2,16 +2,43 @@
 // URL/校验纯函数见 url-utils.js，规则形状与导入导出见 rules.js；本文件统一 re-export
 // 这两个模块的公共 API，保持 `storage.js` 作为对外单一入口。
 
-import { getExtensionStorageArea } from "./extension-api.js";
+import { getExtensionStorageArea, getExtensionApi } from "./extension-api.js";
 import { getLocalDateKey, isHttpUrl, normalizeTargetUrl } from "./url-utils.js";
 import {
   normalizeRules,
   normalizeSettings,
   upsertRule,
+  renameRuleTargetUrl,
 } from "./rules.js";
 
 export * from "./url-utils.js";
 export * from "./rules.js";
+
+// Web Locks serialize short storage transactions across popup and service worker.
+// The fallback is for Node checks; supported Chromium extension contexts have Web Locks.
+let storageQueue = Promise.resolve();
+function withStorageLock(task) {
+  if (globalThis.navigator?.locks) return navigator.locks.request("tabwake-storage", task);
+  const run = storageQueue.then(task, task);
+  storageQueue = run.catch(() => {});
+  return run;
+}
+const RULE_RUNTIME_KEY = "ruleRuntime";
+
+function migrateRuntime(values) {
+  return Object.fromEntries(normalizeRules(values.rules).map(rule => [rule.targetUrl,
+    values[RULE_RUNTIME_KEY]?.[rule.targetUrl] || { lastRuns: rule.lastRuns }
+  ]));
+}
+function applyRuntime(rules, runtime) {
+  return normalizeRules(rules.map(rule => {
+    const state = runtime[rule.targetUrl];
+    return { ...rule, lastRuns: state?.lastRuns || rule.lastRuns,
+      strategies: { ...rule.strategies, countdownRunAt:
+        state?.consumedCountdownRunAt === rule.strategies.countdownRunAt
+          ? "" : rule.strategies.countdownRunAt } };
+  }));
+}
 
 const DEFAULT_SETTINGS = {
   rules: [],
@@ -30,14 +57,26 @@ export async function loadSettings(storageArea = getExtensionStorageArea("local"
     "targetUrl",
     "lastOpenedDate",
     "settings",
+    RULE_RUNTIME_KEY,
   ]);
-  const settings = normalizeSettings(values.settings);
+  let settings = normalizeSettings(values.settings);
+  if (!["zh", "en"].includes(values.settings?.language)) {
+    settings = await withStorageLock(async () => {
+      const fresh = await storageArea.get(["settings"]);
+      const next = normalizeSettings(fresh.settings);
+      if (!["zh", "en"].includes(fresh.settings?.language)) {
+        next.language = /^zh(?:-|$)/i.test(getExtensionApi()?.i18n?.getUILanguage?.() || globalThis.navigator?.language || "en") ? "zh" : "en";
+        await storageArea.set({ settings: next });
+      }
+      return next;
+    });
+  }
 
   if (Array.isArray(values.rules)) {
     return {
       ...DEFAULT_SETTINGS,
       settings,
-      rules: normalizeRules(values.rules),
+      rules: applyRuntime(normalizeRules(values.rules), migrateRuntime(values)),
     };
   }
 
@@ -52,13 +91,11 @@ export async function loadSettings(storageArea = getExtensionStorageArea("local"
       },
     });
 
-    await storageArea.set({ rules });
-
-    return {
-      ...DEFAULT_SETTINGS,
-      settings,
-      rules,
-    };
+    await withStorageLock(async () => {
+      const current = await storageArea.get(["rules"]);
+      if (!Array.isArray(current.rules)) await storageArea.set({ rules });
+    });
+    return loadSettings(storageArea);
   }
 
   return { ...DEFAULT_SETTINGS, settings };
@@ -66,27 +103,68 @@ export async function loadSettings(storageArea = getExtensionStorageArea("local"
 
 export async function saveSettings(settings, storageArea = getExtensionStorageArea("local")) {
   const normalizedSettings = normalizeSettings(settings);
-  await storageArea.set({ settings: normalizedSettings });
+  await withStorageLock(() => storageArea.set({ settings: normalizedSettings }));
   return normalizedSettings;
 }
 
 export async function saveSettingsAndRules(
   settings,
   rules,
-  storageArea = getExtensionStorageArea("local")
+  storageArea = getExtensionStorageArea("local"),
+  { resetTargets = null } = {}
 ) {
-  const normalizedSettings = normalizeSettings(settings);
-  const normalizedRules = normalizeRules(rules);
+  return saveConfiguration(rules, storageArea, normalizeSettings(settings), resetTargets ?? true);
+}
 
-  await storageArea.set({
-    settings: normalizedSettings,
-    rules: normalizedRules,
+async function saveConfiguration(rules, storageArea, settings, resetRuntime = false) {
+  return withStorageLock(async () => {
+    const values = await storageArea.get(["rules", RULE_RUNTIME_KEY]);
+    const normalizedRules = normalizeRules(typeof rules === "function" ? rules(applyRuntime(normalizeRules(values.rules), migrateRuntime(values))) : rules);
+    const previousRuntime = resetRuntime === true ? {} : migrateRuntime(values);
+    if (Array.isArray(resetRuntime)) for (const target of resetRuntime) delete previousRuntime[target];
+    const runtime = Object.fromEntries(normalizedRules.map(rule => [rule.targetUrl,
+      previousRuntime[rule.targetUrl] || { lastRuns: { dailyStartupDate: "", dailyTimes: {} } }
+    ]));
+    if (resetRuntime === false) {
+      const previousRules = new Map(normalizeRules(values.rules).map(rule => [rule.targetUrl, rule]));
+      for (const rule of normalizedRules) {
+        if (previousRules.get(rule.targetUrl)?.enabled === false && rule.enabled && rule.strategies.dailyStartup) {
+          runtime[rule.targetUrl].lastRuns = { ...runtime[rule.targetUrl].lastRuns, dailyStartupDate: getLocalDateKey() };
+        }
+      }
+    }
+    const configuration = normalizedRules.map(({ lastRuns, ...rule }) => rule);
+    await storageArea.set({ rules: configuration, [RULE_RUNTIME_KEY]: runtime,
+      ...(settings ? { settings } : {}) });
+    const savedRules = applyRuntime(normalizedRules, runtime);
+    return settings ? { settings, rules: savedRules } : savedRules;
   });
+}
 
-  return {
-    settings: normalizedSettings,
-    rules: normalizedRules,
-  };
+export function saveRuleFields(targetUrl, fields, storageArea = getExtensionStorageArea("local")) {
+  if (typeof fields?.title !== "string" || typeof fields?.targetUrl !== "string" || !isHttpUrl(fields.targetUrl)) {
+    throw new Error("Invalid rule fields");
+  }
+  return saveConfiguration(rules => {
+    if (!rules.some(rule => rule.targetUrl === targetUrl)) return rules;
+    const nextTargetUrl = normalizeTargetUrl(fields.targetUrl);
+    return nextTargetUrl === targetUrl
+      ? upsertRule(rules, targetUrl, { title: fields.title })
+      : renameRuleTargetUrl(rules, targetUrl, nextTargetUrl, { title: fields.title });
+  }, storageArea);
+}
+
+export async function saveRuleRuntime(targetUrl, patch, storageArea = getExtensionStorageArea("local")) {
+  return withStorageLock(async () => {
+    const values = await storageArea.get(["rules", RULE_RUNTIME_KEY]);
+    const runtime = migrateRuntime(values);
+    if (!Object.hasOwn(runtime, targetUrl)) return;
+    const current = runtime[targetUrl];
+    runtime[targetUrl] = { ...current, ...patch,
+      lastRuns: { ...current.lastRuns, ...patch.lastRuns,
+        dailyTimes: { ...current.lastRuns?.dailyTimes, ...patch.lastRuns?.dailyTimes } } };
+    await storageArea.set({ [RULE_RUNTIME_KEY]: runtime });
+  });
 }
 
 export async function loadDailyStartupIdleState(
@@ -313,9 +391,7 @@ export async function saveLatestContentRuntimeCache(
 }
 
 export async function saveRules(rules, storageArea = getExtensionStorageArea("local")) {
-  const normalizedRules = normalizeRules(rules);
-  await storageArea.set({ rules: normalizedRules });
-  return normalizedRules;
+  return saveConfiguration(rules, storageArea);
 }
 
 export const storage = {
@@ -324,6 +400,7 @@ export const storage = {
   saveSettings,
   saveSettingsAndRules,
   saveRules,
+  saveRuleRuntime,
   loadDailyStartupIdleState,
   saveDailyStartupIdleState,
   clearDailyStartupIdleState,

@@ -93,3 +93,18 @@ export function validateIntervalMinutes(value) {
 export function validateRulesPerPage(value) {
   return Number.isInteger(value) && RULES_PER_PAGE_OPTIONS.has(value);
 }
+
+export function getHostPermissionOrigin(targetUrl) {
+  try {
+    const url = new URL(normalizeTargetUrl(targetUrl));
+    return isHttpUrl(url.href) ? `${url.origin}/*` : "";
+  } catch { return ""; }
+}
+
+export function getRuleTargetUrl(rule) {
+  return rule.targetUrl || rule.origin;
+}
+
+export function getRuleTitle(rule) {
+  return (typeof rule.title === "string" ? rule.title.trim() : "") || getRuleTargetUrl(rule);
+}
