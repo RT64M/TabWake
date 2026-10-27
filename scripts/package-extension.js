@@ -423,6 +423,19 @@ export async function readZipEntry(zipPath, entryPath) {
   return data;
 }
 
+export async function assertRelativeImportsComplete(directoryUrl) {
+  const files = await collectZipFiles(directoryUrl);
+  const paths = new Set(files.map(file => file.name));
+  for (const file of files.filter(file => file.name.endsWith(".js"))) {
+    const source = file.data.toString("utf8");
+    const imports = source.matchAll(/(?:\b(?:import|export)\s+(?:[^;"']*?\s+from\s*)?|\bimport\s*\()\s*["'](\.[^"']+)["']/g);
+    for (const match of imports) {
+      const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(file.name), match[1]));
+      if (!paths.has(resolved)) throw new Error(`Missing packaged import: ${file.name} -> ${match[1]}`);
+    }
+  }
+}
+
 async function packageTarget(targetName, options) {
   const target = STORE_TARGETS[targetName];
   if (!target) {
@@ -443,6 +456,7 @@ async function packageTarget(targetName, options) {
     options.projectRootUrl
   );
   await writeTargetManifest(targetName, stagingDirectoryUrl, options.projectRootUrl);
+  await assertRelativeImportsComplete(stagingDirectoryUrl);
   await zipDirectory(stagingDirectoryUrl, zipFileUrl);
 
   return {

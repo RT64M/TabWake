@@ -8,10 +8,8 @@ import {
 import {
   NOTIFICATION_FAILED_OPEN_PREFIX,
   NOTIFICATION_OPEN_PREFIX,
-  notificationClickRegistrations,
-  notificationOpenContexts,
-  pendingOpenedTabs,
-  webNavigationRegistrations,
+  notificationState,
+  withTabActionLock,
 } from "./state.js";
 import { getRuleTargetUrl } from "./rule-helpers.js";
 import {
@@ -87,7 +85,11 @@ function registerPendingOpenedTab({
     return;
   }
 
-  pendingOpenedTabs.set(tab.id, {
+  if (tabsApi?.onRemoved?.addListener && !notificationState.tabRemovalRegistered(tabsApi)) {
+    tabsApi.onRemoved.addListener(tabId => notificationState.forgetPending(tabId));
+    notificationState.registerTabRemoval(tabsApi);
+  }
+  notificationState.rememberPending(tab.id, {
     tabId: tab.id,
     rule,
     url,
@@ -102,42 +104,24 @@ function registerPendingOpenedTab({
 }
 
 function registerNotificationOpenContext(notificationId, context = {}) {
-  if (!notificationId) {
-    return;
-  }
-
-  // 同一 URL 的旧通知(尤其窗口启动的 unique 后缀通知)不会再被点击消费,
-  // 注册新条目时顺带清理同 URL 旧键,避免长寿命后台中 Map 无界增长。
-  if (notificationId.startsWith(NOTIFICATION_OPEN_PREFIX)) {
-    const encodedUrl = notificationId
-      .slice(NOTIFICATION_OPEN_PREFIX.length)
-      .split(":")[0];
-    const baseId = `${NOTIFICATION_OPEN_PREFIX}${encodedUrl}`;
-
-    for (const existingId of notificationOpenContexts.keys()) {
-      if (existingId === baseId || existingId.startsWith(`${baseId}:`)) {
-        notificationOpenContexts.delete(existingId);
-      }
-    }
-  }
-
-  notificationOpenContexts.set(notificationId, context);
+  if (!notificationId) return;
+  const baseId = notificationId.startsWith(NOTIFICATION_OPEN_PREFIX)
+    ? `${NOTIFICATION_OPEN_PREFIX}${notificationId.slice(NOTIFICATION_OPEN_PREFIX.length).split(":")[0]}` : "";
+  notificationState.rememberContext(notificationId, context, baseId);
 }
 
 function consumeNotificationOpenContext(notificationId) {
-  const context = notificationOpenContexts.get(notificationId) || {};
-  notificationOpenContexts.delete(notificationId);
-  return context;
+  return notificationState.consumeContext(notificationId);
 }
 
 function unregisterPendingOpenedTab(tabId) {
-  pendingOpenedTabs.delete(tabId);
+  notificationState.forgetPending(tabId);
 }
 
 function ensureWebNavigationListeners(webNavigationApi) {
   if (
     !webNavigationApi?.onErrorOccurred?.addListener ||
-    webNavigationRegistrations.has(webNavigationApi)
+    notificationState.navigationRegistered(webNavigationApi)
   ) {
     return;
   }
@@ -158,17 +142,17 @@ function ensureWebNavigationListeners(webNavigationApi) {
     }
   });
 
-  webNavigationRegistrations.add(webNavigationApi);
+  notificationState.registerNavigation(webNavigationApi);
 }
 
 async function handleOpenedTabNavigationError(details) {
-  const pending = pendingOpenedTabs.get(details.tabId);
+  const pending = notificationState.getPending(details.tabId);
 
   if (!pending || !urlsMatch(details.url || pending.url, pending.url)) {
     return "ignored-navigation-error";
   }
 
-  // 用户在加载完成前主动跳转 / 停止(ERR_ABORTED / NS_BINDING_ABORTED)
+  // 用户在加载完成前主动跳转 / 停止(Chromium ERR_ABORTED、Firefox NS_BINDING_ABORTED)
   // 不代表目标网址不可用:不发失败通知,也不能按 close 设置关掉用户正在操作的标签页。
   const navigationError = String(details.error || "");
 
@@ -176,11 +160,11 @@ async function handleOpenedTabNavigationError(details) {
     navigationError === "net::ERR_ABORTED" ||
     navigationError === "NS_BINDING_ABORTED"
   ) {
-    pendingOpenedTabs.delete(details.tabId);
+    notificationState.forgetPending(details.tabId);
     return "ignored-aborted-navigation";
   }
 
-  pendingOpenedTabs.delete(details.tabId);
+  notificationState.forgetPending(details.tabId);
 
   if (pending.failedOpenBehavior === "close" && pending.createdByTabWake) {
     await pending.tabsApi?.remove?.(details.tabId);
@@ -225,7 +209,11 @@ async function createFailedOpenNotification(pending) {
   return "failed-open-notification-created";
 }
 
-async function openOrFocusUrl(
+function openOrFocusUrl(...args) {
+  return withTabActionLock(() => openOrFocusUrlCore(...args));
+}
+
+async function openOrFocusUrlCore(
   url,
   tabsApi,
   windowsApi,
@@ -294,19 +282,18 @@ async function openOrFocusRule(
     webNavigationApi = null,
     permissionsApi = null,
     storage = null,
-    serializeLatestUpdate = true,
     now = new Date(),
+    fetchDeadline = Infinity,
   } = {}
 ) {
   const resolution = await resolveRuleOpenUrl(
     rule,
     fetchImpl,
     permissionsApi,
-    storage
+    storage,
+    fetchDeadline
   );
-  await persistLatestContentRuntimeCacheIfAdvanced(rule, resolution, storage, {
-    serialize: serializeLatestUpdate,
-  });
+  await persistLatestContentRuntimeCacheIfAdvanced(rule, resolution, storage);
   const url = resolution.url;
 
   return openOrFocusUrl(url, tabsApi, windowsApi, {
@@ -394,7 +381,7 @@ function ensureNotificationClickListener(
 ) {
   if (
     !notificationsApi?.onClicked?.addListener ||
-    notificationClickRegistrations.has(notificationsApi)
+    notificationState.clickRegistered(notificationsApi)
   ) {
     return;
   }
@@ -431,7 +418,8 @@ function ensureNotificationClickListener(
         console.error("TabWake notification target failed to open", error);
       });
   });
-  notificationClickRegistrations.add(notificationsApi);
+  notificationsApi.onClosed?.addListener?.(notificationId => notificationState.forgetContext(notificationId));
+  notificationState.registerClick(notificationsApi);
 }
 
 async function createRuleNotification(
@@ -486,3 +474,7 @@ export {
   openOrFocusUrl,
   tabMatchesOpenUrl,
 };
+
+export function getNotificationRuntimeSizes() {
+  return notificationState.sizes();
+}

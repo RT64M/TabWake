@@ -1,3 +1,5 @@
+import { getRuleTargetUrl, getRuleTitle } from "../src/url-utils.js";
+import { getHostPermissionOrigin } from "../src/url-utils.js";
 import { isHttpUrl, normalizeTargetUrl, upsertRule } from "../src/storage.js";
 import {
   detectUpdatePartRange,
@@ -7,17 +9,11 @@ import {
   predictNextExampleUrl,
 } from "../src/latest-url-rules.js";
 import { getExtensionApi } from "../src/extension-api.js";
-import { getNextAvailableDailyTime as getSmartNextDailyTime } from "./popup-view.js";
+import { getNextAvailableDailyTime as getSmartNextDailyTime } from "./view/shared.js";
 
-export function getRuleTargetUrl(rule) {
-  return rule.targetUrl || rule.origin;
-}
 
-export function getRuleTitle(rule) {
-  const title = typeof rule.title === "string" ? rule.title.trim() : "";
 
-  return title || getRuleTargetUrl(rule);
-}
+
 
 export function createDraftRule({ targetUrl, title }) {
   return upsertRule([], targetUrl, {
@@ -129,19 +125,11 @@ export function validateLatestContentDraft(draft) {
   };
 }
 
-export function getHostPermissionOrigin(targetUrl) {
-  try {
-    const url = new URL(normalizeTargetUrl(targetUrl));
-
-    return `${url.origin}/*`;
-  } catch {
-    return "";
-  }
-}
+export { getHostPermissionOrigin } from "../src/url-utils.js";
 
 export function requestLatestContentPermission(targetUrl) {
   const origin = getHostPermissionOrigin(targetUrl);
-  const permissionsApi = getExtensionApi().permissions;
+  const permissionsApi = getExtensionApi()?.permissions;
 
   if (!origin || !permissionsApi?.request) {
     return Promise.resolve(true);
@@ -229,3 +217,5 @@ export function createInlineConfirmation({
 
   return panel;
 }
+
+export { getRuleTargetUrl, getRuleTitle } from "../src/url-utils.js";

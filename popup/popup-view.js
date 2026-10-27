@@ -1,4 +1,4 @@
-import { validateDailyTime, validateIntervalMinutes } from "../src/storage.js";
+export { formatRuleUrlForDisplay, getNextAvailableDailyTime, createFieldValidationState } from "./view/shared.js";
 import {
   createEmptyRulesGuidance,
   createLanguageSwitchState,
@@ -31,49 +31,6 @@ export { getRuleStatePresentation } from "./view/shared.js";
 export { createStartupLogicState } from "./view/startup-logic.js";
 export { createOpenTargetOptions } from "./view/latest-content.js";
 export { createGlobalAdvancedSettingsState } from "./view/settings.js";
-
-const RULE_URL_DISPLAY_MAX_LENGTH = 36;
-
-export function formatRuleUrlForDisplay(targetUrl) {
-  const rawTargetUrl = String(targetUrl || "");
-  let host = "";
-  let pathname = "";
-
-  try {
-    const url = new URL(rawTargetUrl);
-    host = url.host;
-    pathname = url.pathname;
-  } catch {
-    return rawTargetUrl.replace(/^https?:\/\//, "");
-  }
-
-  const displayUrl = `${host}${pathname}`;
-
-  if (displayUrl.length <= RULE_URL_DISPLAY_MAX_LENGTH) {
-    return displayUrl;
-  }
-
-  const pathSegments = pathname.split("/").filter(Boolean);
-  const hasTrailingSlash = pathname.endsWith("/");
-
-  for (let segmentCount = Math.min(2, pathSegments.length); segmentCount > 0; segmentCount -= 1) {
-    const tail = pathSegments.slice(-segmentCount).join("/");
-    const shortened = `${host}/…/${tail}${hasTrailingSlash ? "/" : ""}`;
-
-    if (shortened.length <= RULE_URL_DISPLAY_MAX_LENGTH) {
-      return shortened;
-    }
-  }
-
-  const fallbackPrefix = `${host}/…`;
-  const tailLength = RULE_URL_DISPLAY_MAX_LENGTH - fallbackPrefix.length;
-
-  if (tailLength > 0 && pathSegments.length) {
-    return `${fallbackPrefix}${pathSegments.at(-1).slice(-tailLength)}`;
-  }
-
-  return displayUrl;
-}
 
 export function createPopupViewState({
   view,
@@ -360,98 +317,6 @@ export function normalizePopupViewStateForRender(state, context = {}) {
   return state;
 }
 
-function addMinutesToTime(time, minutesToAdd) {
-  const [hours, minutes] = time.split(":").map(Number);
-  const totalMinutes = (hours * 60 + minutes + minutesToAdd) % 1440;
-  const nextHours = Math.floor(totalMinutes / 60);
-  const nextMinutes = totalMinutes % 60;
-
-  return `${String(nextHours).padStart(2, "0")}:${String(nextMinutes).padStart(2, "0")}`;
-}
-
-export function getNextAvailableDailyTime(dailyTimes, now = new Date()) {
-  const validTimes = Array.isArray(dailyTimes)
-    ? dailyTimes.filter(validateDailyTime).sort()
-    : [];
-
-  if (validTimes.length) {
-    const occupiedTimes = new Set(validTimes);
-    const firstCandidate = addMinutesToTime(validTimes.at(-1), 60);
-
-    for (let offset = 0; offset < 24; offset += 1) {
-      const candidate = addMinutesToTime(firstCandidate, offset * 60);
-
-      if (!occupiedTimes.has(candidate)) {
-        return candidate;
-      }
-    }
-
-    for (let offset = 1; offset < 1440; offset += 1) {
-      const candidate = addMinutesToTime(firstCandidate, offset);
-
-      if (!occupiedTimes.has(candidate)) {
-        return candidate;
-      }
-    }
-
-    return "";
-  }
-
-  const next = new Date(now);
-  next.setHours(next.getHours() + 1, 0, 0, 0);
-
-  return `${String(next.getHours()).padStart(2, "0")}:00`;
-}
-
-export function getAddRuleNavigationTarget(origin) {
-  return {
-    view: "detail",
-    selectedTargetUrl: origin,
-  };
-}
-
-export function createPersistenceQueue() {
-  let pending = Promise.resolve();
-
-  return (operation) => {
-    const task = pending.then(operation, operation);
-    pending = task.catch(() => undefined);
-    return task;
-  };
-}
-
-export function createRulesPersistenceQueue({
-  saveRules,
-  synchronizeRules = () => true,
-  enqueue = createPersistenceQueue(),
-}) {
-  return (nextRules) => {
-    const persist = async () => {
-      const savedRules = await saveRules(nextRules);
-      const scheduleSynced = await synchronizeRules(savedRules);
-
-      return {
-        rules: savedRules,
-        scheduleSynced,
-      };
-    };
-
-    return enqueue(persist);
-  };
-}
-
-export function createDailyTimesPatch(rule, updateDailyTimes) {
-  const dailyTimes = Array.isArray(rule?.strategies?.dailyTimes)
-    ? rule.strategies.dailyTimes
-    : [];
-
-  return {
-    strategies: {
-      dailyTimes: updateDailyTimes([...dailyTimes]),
-    },
-  };
-}
-
 export function createDailyTimeRowState(initialValue) {
   let value = initialValue;
 
@@ -464,85 +329,6 @@ export function createDailyTimeRowState(initialValue) {
       value = nextValue;
       return previousValue;
     },
-  };
-}
-
-export function createFieldValidationState({
-  type,
-  value,
-  previousValue = "",
-  existingValues = [],
-  message,
-}) {
-  const trimmedValue = String(value).trim();
-  const intervalPeriodMinutes = () => {
-    const hoursRaw = String(value?.hours ?? "").trim();
-    const minutesRaw = String(value?.minutes ?? "").trim();
-    const hours = hoursRaw ? Number(hoursRaw) : 0;
-    const minutes = minutesRaw ? Number(minutesRaw) : 0;
-
-    if (
-      !Number.isInteger(hours) ||
-      !Number.isInteger(minutes) ||
-      hours < 0 ||
-      minutes < 0 ||
-      minutes > 59
-    ) {
-      return null;
-    }
-
-    return hours * 60 + minutes;
-  };
-  const validators = {
-    dailyTime: () => validateDailyTime(trimmedValue),
-    intervalMinutes: () => validateIntervalMinutes(Number(trimmedValue)),
-    intervalPeriod: () => validateIntervalMinutes(intervalPeriodMinutes()),
-    countdownPeriod: () => validateIntervalMinutes(intervalPeriodMinutes()),
-    returnFromIdlePeriod: () =>
-      validateIntervalMinutes(intervalPeriodMinutes()),
-  };
-  const errorKeys = {
-    dailyTime: "invalidTime",
-    intervalMinutes: "invalidInterval",
-    intervalPeriod: "invalidInterval",
-    countdownPeriod: "invalidInterval",
-    returnFromIdlePeriod: "invalidReturnFromIdle",
-  };
-  const isValid = validators[type]?.() === true;
-  const errorKey = errorKeys[type] || "invalidInterval";
-
-  if (isValid) {
-    if (
-      type === "dailyTime" &&
-      trimmedValue !== previousValue &&
-      existingValues.includes(trimmedValue)
-    ) {
-      return {
-        valid: false,
-        value: trimmedValue,
-        errorKey: "duplicateDailyTime",
-        errorMessage: message("duplicateDailyTime"),
-      };
-    }
-
-    return {
-      valid: true,
-      value:
-        type === "intervalPeriod" ||
-        type === "countdownPeriod" ||
-        type === "returnFromIdlePeriod"
-          ? String(intervalPeriodMinutes())
-          : trimmedValue,
-      errorKey: "",
-      errorMessage: "",
-    };
-  }
-
-  return {
-    valid: false,
-    value,
-    errorKey,
-    errorMessage: message(errorKey),
   };
 }
 
@@ -593,5 +379,54 @@ export function getPopupFocusTarget({
 
   return {
     type: "none",
+  };
+}
+
+export function getAddRuleNavigationTarget(origin) {
+  return {
+    view: "detail",
+    selectedTargetUrl: origin,
+  };
+}
+
+export function createPersistenceQueue() {
+  let pending = Promise.resolve();
+
+  return (operation) => {
+    const task = pending.then(operation, operation);
+    pending = task.catch(() => undefined);
+    return task;
+  };
+}
+
+export function createRulesPersistenceQueue({
+  saveRules,
+  synchronizeRules = () => true,
+  enqueue = createPersistenceQueue(),
+}) {
+  return (nextRules) => {
+    const persist = async () => {
+      const savedRules = await saveRules(nextRules);
+      const scheduleSynced = await synchronizeRules(savedRules);
+
+      return {
+        rules: savedRules,
+        scheduleSynced,
+      };
+    };
+
+    return enqueue(persist);
+  };
+}
+
+export function createDailyTimesPatch(rule, updateDailyTimes) {
+  const dailyTimes = Array.isArray(rule?.strategies?.dailyTimes)
+    ? rule.strategies.dailyTimes
+    : [];
+
+  return {
+    strategies: {
+      dailyTimes: updateDailyTimes([...dailyTimes]),
+    },
   };
 }

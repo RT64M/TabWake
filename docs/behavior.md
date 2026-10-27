@@ -10,6 +10,8 @@ This document records the detailed runtime behavior for TabWake. The README stay
 - The home list defaults to 5 sites per page. Settings allow 3, 5, or 10.
 - Draft rules are not saved until confirmed. Leaving a draft shows an inline confirmation inside the popup.
 - Deleting a rule uses an inline confirmation and removes all startup logic for that rule.
+- On first use, the interface follows the browser language (Chinese or English). A saved language choice takes precedence.
+- Closing the popup saves valid edits to a saved rule's name and URL. Invalid or duplicate URL text is kept locally so you can continue editing when you reopen the detail view. New draft rules still require confirmation.
 
 ## Open Targets
 
@@ -22,7 +24,7 @@ Auto-update treats "latest" as a URL pattern question, not a page freshness ques
 
 Configuration is fully local and does not go online. On the complete URL you click the segment(s) that change to mark the **update part** (one or more consecutive segments, for example `issue-94` or `2026/05/24`). When TabWake cannot auto-predict the next value, you fill an **expected next URL** that must match the current URL shape. Confirming only validates locally and requests the site's host permission for later use.
 
-At trigger time (and only then), TabWake fetches the prefix page above the update part, collects same-origin candidates, takes the highest by the update part, then probes forward for newer same-shape URLs (HEAD, falling back to GET) until one does not exist or a limit is reached, and opens the newest existing URL. One trigger is capped at 20 forward hops, 8 seconds per request, and 15 seconds total for the prefix fetch plus probes.
+At trigger time (and only then), TabWake fetches the prefix page above the update part, collects same-origin candidates, takes the highest by the update part, then probes forward for newer same-shape URLs (HEAD, falling back to GET) until one does not exist or a limit is reached, and opens the newest existing URL. One trigger is capped at 20 forward hops, 8 seconds per request including content download, and 15 seconds total for the prefix fetch plus probes. Downloaded pages are limited to 2 MiB. If a page cannot be read within these limits, TabWake continues with the last known matching URL or saved URL.
 
 Candidate URLs must:
 
@@ -30,7 +32,7 @@ Candidate URLs must:
 - Keep every segment outside the update part identical.
 - Match the shape of the update part. The matcher can compare issue numbers, single-date paths, multi-segment date paths, stable ID segments, and semantic versions such as `v1.2.3` or `v1.0.0-rc.1`.
 
-If host permission is missing, scheduled Auto-update does not fetch anything and falls back to the saved URL.
+If host permission is missing, scheduled Auto-update does not fetch anything and falls back to the saved URL. Older Auto-update rules without an example URL also use the saved URL until you complete their configuration.
 
 ## Optional Host Permissions
 
@@ -39,7 +41,7 @@ TabWake declares `http://*/*` and `https://*/*` as `optional_host_permissions`, 
 - Installation does not ask for access to all websites.
 - When a user confirms Auto-update for a site, the popup requests that site's origin pattern, such as `https://example.com/*`.
 - If the user denies the request, the draft is kept and Auto-update is not saved.
-- If permission is later revoked, scheduled Auto-update resolution does not fetch the page and falls back to the saved URL.
+- If permission is later revoked, scheduled Auto-update resolution does not fetch the page and falls back to the saved URL. The site settings show the missing permission and provide a button to request it again.
 
 ## Prompt Modes
 
@@ -112,11 +114,13 @@ When a newly opened TabWake tab fails to load, TabWake shows a browser notificat
 
 Clicking the notification opens the failed URL again.
 
+HTTP 404/500 error pages usually load successfully from the browser's perspective and do not trigger failed-open handling. Only navigation network failures are detected.
+
 This detection is best effort. The pending opened-tab map is held in the current Manifest V3 service worker's memory, so if the service worker is stopped before the navigation failure is observed, TabWake may not show the failed-open notification or close the tab.
 
 Navigations the user cancels themselves (for example navigating away or pressing stop while the tab is still loading) are not treated as failed opens: no notification is shown and the tab is never closed.
 
-Rule run records are written by the background after a trigger finishes. If the popup saves an edit at the same moment a trigger is running, the background re-reads the latest rules just before writing its run record, so only a write landing in that final few-millisecond window could be lost. This residual race is accepted as a known limitation.
+Editing a rule preserves its run history, including when a scheduled trigger finishes while the popup is open. Completed one-shot countdowns remain completed. Changing a rule's saved URL starts fresh run history for that URL; re-enabling a paused first-daily rule counts the current day as handled.
 
 ## Import And Export
 
@@ -126,6 +130,7 @@ Export creates one local JSON backup file containing rules and settings. Import 
 - Merge keeps current rules that are not in the file and overwrites matching saved URLs.
 - Import/export does not transfer first-daily run history, daily-time run history, idle state, or active one-shot countdown trigger times.
 - Imported one-shot countdowns are disabled so they do not fire unexpectedly on another browser or device.
+- The import preview reports how many invalid or duplicate rules were skipped so you can check the source file.
 
 ## Linux Notes
 
@@ -137,8 +142,11 @@ Windows and macOS are the primary validation targets. Linux notification, idle, 
 
 TabWake 会保存去掉查询参数和 hash 后的 HTTP(S) 网址。每条规则可选择“固定网址”或“自动追踪”，并通过启动逻辑决定何时触发。
 
-“自动追踪”统一使用这个术语。你只需在完整网址上点击会变化的“更新部分”（可连续多段，如 `issue-94` 或 `2026/05/24`）；无法自动推算下一个时再手填“预期的下一个网址”。配置阶段完全本地、不联网，只做本地校验并申请该站点 host 权限。触发时才在同站抓取前缀页并按形态向后探测（HEAD 回退 GET）真正存在的最新链接；单次触发最多 20 跳、单请求最多 8 秒、整次联网最多 15 秒。不读取外部服务，不用页面更新时间或 sitemap `lastmod` 判断新旧。安装时不会请求读取所有网站；权限缺失时回退打开固定网址。
+“自动追踪”统一使用这个术语。你只需在完整网址上点击会变化的“更新部分”（可连续多段，如 `issue-94` 或 `2026/05/24`）；无法自动推算下一个时再手填“预期的下一个网址”。配置阶段完全本地、不联网，只做本地校验并申请该站点 host 权限。触发时才在同站抓取前缀页并按形态向后探测（HEAD 回退 GET）真正存在的最新链接；单次触发最多 20 跳、单请求最多 8 秒、整次联网最多 15 秒。不读取外部服务，不用页面更新时间或 sitemap `lastmod` 判断新旧。安装时不会请求读取所有网站；权限缺失时回退打开固定网址，并在网站设置中提示，可点击恢复权限。读取正文同样受超时约束，单页下载上限为 2 MiB。
 
 “提示方式生效范围”可设为按网站生效或按启动逻辑生效。四档提示方式为“静默 / 通知 / 页内聚焦 / 跨应用”。
 
 周期 alarm 在名称和周期未变时保留原有相位；每日固定时间允许按计划时间迟到 5 分钟内执行，但浏览器未运行而真正错过的每日时间不会补执行。打开失败检测依赖当前 service worker 内存，属于 best-effort。
+
+
+首次使用按浏览器界面语言选择中文或英文，之后保留用户选择。编辑规则不会覆盖已完成的触发记录，已执行的倒计时不会因旧弹窗保存而恢复。关闭弹窗会保存已有规则的有效名称和网址修改；无效或重复网址保留为本地草稿，重新进入详情可继续编辑。导入预览会提示跳过的无效或重复规则数量。失败检测只覆盖导航网络错误，HTTP 404/500 页面通常不触发失败处理。

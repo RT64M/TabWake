@@ -256,7 +256,6 @@ function hasRecognizedSettings(settings = {}) {
   return (
     isPlainObject(settings) &&
     [
-      "dailyStartupIdleMinutes",
       "focusScopeMode",
       "language",
       "rulesPerPage",
@@ -410,6 +409,7 @@ function sanitizeRulesForTransfer(rules) {
   return {
     rules: sanitizedRules,
     disabledCountdownCount,
+    discardedRuleCount: Array.isArray(rules) ? rules.length - sanitizedRules.length : 0,
   };
 }
 
@@ -426,6 +426,7 @@ export function createSettingsExportPayload(
     settings: normalizeSettings(settings),
     rules: transferRules.rules,
     meta: {
+      discardedRuleCount: transferRules.discardedRuleCount,
       ruleCount: transferRules.rules.length,
       disabledCountdownCount: transferRules.disabledCountdownCount,
     },
@@ -472,6 +473,7 @@ export function parseSettingsImportPayload(fileJson) {
     settings: normalizeSettings(payload.settings),
     rules: transferRules.rules,
     meta: {
+      discardedRuleCount: transferRules.discardedRuleCount,
       ruleCount: transferRules.rules.length,
       disabledCountdownCount: Math.max(
         transferRules.disabledCountdownCount,
@@ -512,6 +514,7 @@ export function applySettingsImportPayload(
     settings: normalizeSettings(payload?.settings),
     rules,
     stats: {
+      discarded: payload?.meta?.discardedRuleCount || 0,
       imported: importedRules.length,
       added,
       updated,

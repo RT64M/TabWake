@@ -1,5 +1,7 @@
+import { getHostPermissionOrigin as getLatestContentPermissionOrigin } from "../url-utils.js";
 import {
   createLatestContentRuntimeCacheFingerprint,
+  getExtensionApi,
   isExampleUrlNewerByRange,
   isHttpUrl,
   normalizeRules,
@@ -7,7 +9,7 @@ import {
   resolveLatestContentUrl,
   resolveLatestContentUrlByRange,
 } from "./shared.js";
-import { withRuleMutationLock } from "./state.js";
+import { withLatestCacheLock } from "./state.js";
 import {
   getRuleTargetUrl,
   getSafeExpectedNextExampleUrl,
@@ -75,8 +77,7 @@ async function getLatestContentRuntimeCacheContext(rule, storage) {
 async function persistLatestContentRuntimeCacheIfAdvanced(
   rule,
   resolution,
-  storage,
-  { serialize = true } = {}
+  storage
 ) {
   const runtimeCache = resolution.runtimeCache;
 
@@ -127,7 +128,7 @@ async function persistLatestContentRuntimeCacheIfAdvanced(
     });
   };
 
-  return serialize ? withRuleMutationLock(task) : task();
+  return withLatestCacheLock(task);
 }
 
 function getSafeRunNowRule(storedRule, ruleOverride, targetUrl) {
@@ -148,25 +149,14 @@ function getSafeRunNowRule(storedRule, ruleOverride, targetUrl) {
   return normalizedOverride;
 }
 
-function markDailyTime(rule, time, today) {
-  return {
-    ...rule,
-    lastRuns: {
-      ...rule.lastRuns,
-      dailyStartupDate: rule.lastRuns?.dailyStartupDate || "",
-      dailyTimes: {
-        ...(rule.lastRuns?.dailyTimes || {}),
-        [time]: today,
-      },
-    },
-  };
-}
+
 
 async function resolveRuleOpenUrl(
   rule,
   fetchImpl,
   permissionsApi = null,
-  storage = null
+  storage = null,
+  fetchDeadline = Infinity
 ) {
   const targetUrl = getRuleTargetUrl(rule);
 
@@ -192,6 +182,7 @@ async function resolveRuleOpenUrl(
         updatePartRange: rule.updatePartRange,
         expectedNextExampleUrl: runtimeCache.expectedNextExampleUrl,
         fetchImpl,
+        totalFetchBudgetMs: Math.max(0, fetchDeadline - Date.now()),
       });
 
       return {
@@ -204,11 +195,13 @@ async function resolveRuleOpenUrl(
 
     // 旧模型迁移兼容路径:仅对没有 updatePartRange 的历史 / 导入规则生效
     //(popup 已按未完成配置要求重新确认更新段),按基础页 + 末尾示例形状解析。
+    if (!rule.latestExampleUrl) return { url: targetUrl, runtimeCache: null };
     const resolvedUrl = await resolveLatestContentUrl({
       origin: rule.origin,
       targetUrl,
       latestExampleUrl: rule.latestExampleUrl || "",
       fetchImpl,
+      totalFetchBudgetMs: Math.max(0, fetchDeadline - Date.now()),
     });
 
     return {
@@ -220,20 +213,6 @@ async function resolveRuleOpenUrl(
   }
 
   return { url: targetUrl, runtimeCache: null };
-}
-
-function getLatestContentPermissionOrigin(targetUrl) {
-  try {
-    const url = new URL(normalizeTargetUrl(targetUrl));
-
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return "";
-    }
-
-    return `${url.origin}/*`;
-  } catch {
-    return "";
-  }
 }
 
 async function getLatestContentPermissionStatus(
@@ -271,7 +250,6 @@ export {
   getSafeExpectedNextExampleUrl,
   hasUnsafeLatestExampleUrl,
   isStrictLatestRangeAdvanceFrom,
-  markDailyTime,
   persistLatestContentRuntimeCacheIfAdvanced,
   resolveRuleOpenUrl,
 };

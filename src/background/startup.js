@@ -14,7 +14,6 @@ import {
   getRuleTargetUrl,
   getStartupModeForRule,
   hasBrowserWindowStartupRules,
-  markDailyStartup,
   shouldDeferReturnFromIdle,
 } from "./rule-helpers.js";
 import { configureIdleDetection, rebuildAlarms, runRuleStartupAction } from "./scheduling.js";
@@ -44,100 +43,94 @@ async function runDailyStartupForRulesCore({
     return "no-rules";
   }
 
-  const today = storage.getLocalDateKey();
-  const dailyStartupHandledTargets = new Set();
+  const today = storage.getLocalDateKey(now);
+  // ponytail: three workers share one 15s network deadline; raise concurrency only after measurement.
+  const fetchDeadline = Date.now() + 15000;
   const results = [];
   const pendingReturnFromIdleTargets = deferReturnFromIdle
     ? await storage.loadPendingReturnFromIdleTargets()
     : [];
 
-  for (const rule of rules) {
-    if (rule.enabled === false) {
-      continue;
-    }
+  let nextIndex = 0;
+  const ruleResults = new Array(rules.length);
+  await Promise.all(Array.from({ length: Math.min(3, rules.length) }, async () => {
+    while (nextIndex < rules.length) {
+      const index = nextIndex++;
+      const rule = rules[index];
+      const results = [];
+      ruleResults[index] = results;
+      if (rule.enabled === false) {
+        continue;
+      }
 
-    const matchedStrategyTypes = getMatchedStrategyTypes(rule, today);
+      const matchedStrategyTypes = getMatchedStrategyTypes(rule, today);
 
-    if (!matchedStrategyTypes.length) {
-      continue;
-    }
+      if (!matchedStrategyTypes.length) {
+        continue;
+      }
 
-    let immediateStrategyTypes = matchedStrategyTypes;
-    let shouldQueueReturnFromIdle = false;
+      let immediateStrategyTypes = matchedStrategyTypes;
+      let shouldQueueReturnFromIdle = false;
 
-    if (
-      deferReturnFromIdle &&
-      matchedStrategyTypes.includes("returnFromIdle") &&
-      shouldDeferReturnFromIdle(rule, settings)
-    ) {
-      immediateStrategyTypes = matchedStrategyTypes.filter(
-        (type) => type !== "returnFromIdle"
-      );
-      shouldQueueReturnFromIdle = true;
-    }
-
-    if (immediateStrategyTypes.length) {
-      try {
-        results.push(
-          await runRuleStartupAction(
-            rule,
-            tabsApi,
-            windowsApi,
-            notificationsApi,
-            fetchImpl,
-            preferStartupTriggerNotification
-              ? getBrowserStartupModeForRule(rule, settings, immediateStrategyTypes)
-              : getStartupModeForRule(rule, settings, immediateStrategyTypes),
-            {
-              settings: {
-                ...settings,
-                uniqueStartupNotification,
-              },
-              webNavigationApi,
-              permissionsApi,
-              storage,
-              serializeLatestUpdate: false,
-              now,
-            }
-          )
+      if (
+        deferReturnFromIdle &&
+        matchedStrategyTypes.includes("returnFromIdle") &&
+        shouldDeferReturnFromIdle(rule, settings)
+      ) {
+        immediateStrategyTypes = matchedStrategyTypes.filter(
+          (type) => type !== "returnFromIdle"
         );
+        shouldQueueReturnFromIdle = true;
+      }
 
-        // 执行失败(下方 catch)不标记当天已处理,后续 idle 回归等触发当天仍可重试;
-        // 只有实际打开 / 通知成功后才按每日去重记账。
-        if (matchedStrategyTypes.includes("dailyStartup")) {
-          dailyStartupHandledTargets.add(getRuleTargetUrl(rule));
+      if (immediateStrategyTypes.length) {
+        try {
+          const result = await runRuleStartupAction(
+              rule,
+              tabsApi,
+              windowsApi,
+              notificationsApi,
+              fetchImpl,
+              preferStartupTriggerNotification
+                ? getBrowserStartupModeForRule(rule, settings, immediateStrategyTypes)
+                : getStartupModeForRule(rule, settings, immediateStrategyTypes),
+              {
+                settings: {
+                  ...settings,
+                  uniqueStartupNotification,
+                },
+                webNavigationApi,
+                permissionsApi,
+                storage,
+                now,
+                fetchDeadline,
+              }
+          );
+
+          // 执行失败(下方 catch)不标记当天已处理,后续 idle 回归等触发当天仍可重试;
+          // 只有实际打开 / 通知成功后才按每日去重记账。
+          if (matchedStrategyTypes.includes("dailyStartup")) {
+            await storage.saveRuleRuntime(getRuleTargetUrl(rule), { lastRuns: { dailyStartupDate: today } });
+          }
+          results.push(result);
+        } catch (error) {
+          console.error("TabWake rule failed to run", error);
+          results.push("rule-failed");
         }
-      } catch (error) {
-        console.error("TabWake rule failed to run", error);
-        results.push("rule-failed");
-      }
-    } else if (shouldQueueReturnFromIdle) {
-      const targetUrl = getRuleTargetUrl(rule);
+      } else if (shouldQueueReturnFromIdle) {
+        const targetUrl = getRuleTargetUrl(rule);
 
-      if (!pendingReturnFromIdleTargets.includes(targetUrl)) {
-        pendingReturnFromIdleTargets.push(targetUrl);
+        if (!pendingReturnFromIdleTargets.includes(targetUrl)) {
+          pendingReturnFromIdleTargets.push(targetUrl);
+        }
+        results.push("queued-return-from-idle");
       }
-      results.push("queued-return-from-idle");
     }
-  }
+  }));
+  results.push(...ruleResults.flat());
 
   if (pendingReturnFromIdleTargets.length && deferReturnFromIdle) {
     await storage.savePendingReturnFromIdleTargets(pendingReturnFromIdleTargets);
-  }
-
-  if (results.length) {
-    // 打开 / 检索可能耗时数秒;写回前重读最新规则,只应用本次每日首启标记,
-    // 收窄与 popup 并发编辑之间的丢更新窗口(popup 与后台分属不同上下文,
-    // withRuleMutationLock 只能序列化后台内部写)。
-    const { rules: freshRules } = await storage.loadSettings();
-
-    await storage.saveRules(
-      freshRules.map((item) =>
-        dailyStartupHandledTargets.has(getRuleTargetUrl(item))
-          ? markDailyStartup(item, today)
-          : item
-      )
-    );
   }
 
   return results;
@@ -151,7 +144,6 @@ async function openPendingReturnFromIdleTargets({
   webNavigationApi,
   fetchImpl,
   permissionsApi = null,
-  serializeLatestUpdate = true,
   now = new Date(),
 }) {
   const pendingTargets = await storage.loadPendingReturnFromIdleTargets();
@@ -163,6 +155,7 @@ async function openPendingReturnFromIdleTargets({
   const { rules, settings } = await storage.loadSettings();
   const results = [];
   const retryTargets = [];
+  const fetchDeadline = Date.now() + 15000;
 
   for (const targetUrl of pendingTargets) {
     const rule = findRule(rules, targetUrl);
@@ -180,8 +173,8 @@ async function openPendingReturnFromIdleTargets({
           webNavigationApi,
           permissionsApi,
           storage,
-          serializeLatestUpdate,
           now,
+          fetchDeadline,
         })
       );
     } catch {
@@ -350,6 +343,8 @@ export async function handleBrowserWindowTabCreated(
   if (tab?.windowId === undefined || !windowsApi?.get) {
     return "window-unavailable";
   }
+
+  if (Number.isInteger(tab.index) && tab.index !== 0) return "ignored-existing-window-tab";
 
   if (!(await hasBrowserWindowStartupRules(storage))) {
     return "no-window-startup-rules";

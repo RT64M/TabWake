@@ -16,7 +16,7 @@ import {
   isDailyAlarmDeliveryOnTime,
   parseAlarmName,
 } from "./rule-helpers.js";
-import { getSafeRunNowRule, markDailyTime } from "./latest-content-runtime.js";
+import { getSafeRunNowRule } from "./latest-content-runtime.js";
 import { runRuleStartupAction } from "./scheduling.js";
 import { openPendingReturnFromIdleTargets, runDailyStartupForRules } from "./startup.js";
 
@@ -96,50 +96,49 @@ async function handleIdleStateChangedCore(
 
   const idleElapsedMinutes = getIdleElapsedMinutes(effectiveIdleStartedAt, now);
 
-  await storage.clearDailyStartupIdleState();
-  await storage.clearReturnFromIdleState();
+  try {
+    return await runDailyStartupForRules({
+      storage,
+      tabsApi,
+      windowsApi,
+      notificationsApi,
+      webNavigationApi,
+      fetchImpl,
+      permissionsApi,
+      now,
+      deferReturnFromIdle: true,
+      getMatchedStrategyTypes(rule, today) {
+        const strategyTypes = [];
+        const shouldRunDaily =
+          rule.strategies.dailyStartup === true &&
+          rule.lastRuns.dailyStartupDate !== today &&
+          idleElapsedMinutes >= getDailyStartupIdleMinutes();
+        const returnFromIdleMinutes = getReturnFromIdleMinutes(rule);
+        const shouldRunReturnFromIdle =
+          returnFromIdleMinutes !== null &&
+          idleElapsedMinutes >= returnFromIdleMinutes;
 
-  const result = await runDailyStartupForRules({
-    storage,
-    tabsApi,
-    windowsApi,
-    notificationsApi,
-    webNavigationApi,
-    fetchImpl,
-    permissionsApi,
-    now,
-    deferReturnFromIdle: true,
-    getMatchedStrategyTypes(rule, today) {
-      const strategyTypes = [];
-      const shouldRunDaily =
-        rule.strategies.dailyStartup === true &&
-        rule.lastRuns.dailyStartupDate !== today &&
-        idleElapsedMinutes >= getDailyStartupIdleMinutes();
-      const returnFromIdleMinutes = getReturnFromIdleMinutes(rule);
-      const shouldRunReturnFromIdle =
-        returnFromIdleMinutes !== null &&
-        idleElapsedMinutes >= returnFromIdleMinutes;
+        if (shouldRunDaily) {
+          strategyTypes.push("dailyStartup");
+        }
 
-      if (shouldRunDaily) {
-        strategyTypes.push("dailyStartup");
-      }
+        if (shouldRunReturnFromIdle) {
+          strategyTypes.push("returnFromIdle");
+        }
 
-      if (shouldRunReturnFromIdle) {
-        strategyTypes.push("returnFromIdle");
-      }
+        return strategyTypes;
+      },
+    });
 
-      return strategyTypes;
-    },
-  });
-
-  await storage.saveDailyStartupIdleState({
-    dailyStartupLastActiveAt: getIsoTimestamp(now),
-  });
-  await storage.saveReturnFromIdleState({
-    returnFromIdleLastActiveAt: getIsoTimestamp(now),
-  });
-
-  return result;
+  } finally {
+    // Each idle state and its last-active timestamp change in the same storage write.
+    const outcomes = await Promise.allSettled([
+      storage.saveDailyStartupIdleState({ dailyStartupIdleStartedAt: "", dailyStartupLastActiveAt: getIsoTimestamp(now) }),
+      storage.saveReturnFromIdleState({ returnFromIdleStartedAt: "", returnFromIdleLastActiveAt: getIsoTimestamp(now) }),
+    ]);
+    const failures = outcomes.filter(result => result.status === "rejected");
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), "Idle state update failed");
+  }
 }
 
 export async function handleBrowserWindowFocused(
@@ -170,7 +169,6 @@ export async function handleBrowserWindowFocused(
       webNavigationApi,
       permissionsApi,
       fetchImpl,
-      serializeLatestUpdate: false,
       now,
     })
   );
@@ -281,7 +279,6 @@ async function handleAlarmCore(
         webNavigationApi,
         permissionsApi,
         storage,
-        serializeLatestUpdate: false,
         now,
       }
     );
@@ -313,26 +310,12 @@ async function handleAlarmCore(
         webNavigationApi,
         permissionsApi,
         storage,
-        serializeLatestUpdate: false,
         now,
       }
     );
-    // 打开动作可能耗时;写回前重读最新规则,只清空本条倒计时,
-    // 收窄与 popup 并发编辑之间的丢更新窗口。
-    const { rules: freshRules } = await storage.loadSettings();
-    const nextRules = freshRules.map((item) =>
-      (item.targetUrl || item.origin) === (rule.targetUrl || rule.origin)
-        ? {
-            ...item,
-            strategies: {
-              ...item.strategies,
-              countdownRunAt: "",
-            },
-          }
-        : item
-    );
-
-    await storage.saveRules(nextRules);
+    await storage.saveRuleRuntime(rule.targetUrl || rule.origin, {
+      consumedCountdownRunAt: rule.strategies.countdownRunAt,
+    });
 
     return result;
   }
@@ -351,7 +334,7 @@ async function handleAlarmCore(
     }
   }
 
-  const today = storage.getLocalDateKey();
+  const today = storage.getLocalDateKey(now);
 
   if (rule.lastRuns.dailyTimes?.[alarmInfo.time] === today) {
     return "already-ran-today";
@@ -373,19 +356,12 @@ async function handleAlarmCore(
       webNavigationApi,
       permissionsApi,
       storage,
-      serializeLatestUpdate: false,
       now,
     }
   );
-  // 同上:写回前重读最新规则,只应用本时间点的每日去重标记。
-  const { rules: freshRules } = await storage.loadSettings();
-  const nextRules = freshRules.map((item) =>
-    (item.targetUrl || item.origin) === (rule.targetUrl || rule.origin)
-      ? markDailyTime(item, alarmInfo.time, today)
-      : item
-  );
-
-  await storage.saveRules(nextRules);
+  await storage.saveRuleRuntime(rule.targetUrl || rule.origin, {
+    lastRuns: { dailyTimes: { [alarmInfo.time]: today } },
+  });
 
   return result;
 }

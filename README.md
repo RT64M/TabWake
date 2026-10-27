@@ -38,13 +38,13 @@ For development or temporary local testing:
 6. Choose the prompt mode: Silent, Notify, In-browser, or Cross-app.
 7. Use "Run now" to test the rule once.
 
-The popup defaults to 5 sites per page. Settings can change that to 3, 5, or 10.
+The popup defaults to 5 sites per page. Settings can change that to 3, 5, or 10. On first use, the interface follows your browser language (Chinese or English); your saved language choice is preserved.
 
 ## Auto-Update / 自动追踪
 
 Auto-update is for sites whose content URLs follow a stable pattern, such as issue numbers, date paths, stable IDs, or versions. On the complete URL you click the segment(s) that change to mark the update part; when the next value cannot be auto-predicted you also fill an expected next URL. TabWake then looks for newer same-shape URLs under the same site.
 
-Configuration is fully local and does not go online — confirming only validates the pattern and requests the site's origin permission. At trigger time TabWake fetches the prefix page above the update part and probes forward for the newest existing same-shape URL. The scan is capped at 20 forward hops, 8 seconds per request, and 15 seconds total per trigger. Because that requires site access, TabWake uses optional host permissions: installation does not request access to all websites, and the popup asks for the current site's origin only when you confirm Auto-update for that site. If permission is missing later, scheduled triggers fall back to the saved URL.
+Configuration is fully local and does not go online — confirming only validates the pattern and requests the site's origin permission. At trigger time TabWake fetches the prefix page above the update part and probes forward for the newest existing same-shape URL. The scan is capped at 20 forward hops, 8 seconds per request, and 15 seconds total per trigger. Because that requires site access, TabWake uses optional host permissions: installation does not request access to all websites, and the popup asks for the current site's origin only when you confirm Auto-update for that site. If permission is missing later, scheduled triggers fall back to the saved URL. The site settings show the missing permission and let you restore it.
 
 ## Permissions
 
@@ -81,7 +81,7 @@ Check that the update part is a complete URL segment, such as `issue-94` before 
 
 ### What happens if a saved URL is unavailable?
 
-TabWake shows a browser notification with the failed URL. In settings, you can keep the failed tab or close only the failed tab TabWake just opened. Detection is best effort while the current extension service worker is alive.
+TabWake shows a browser notification with the failed URL. In settings, you can keep the failed tab or close only the failed tab TabWake just opened. Detection covers navigation network failures, not HTTP 404/500 error pages, and is best effort while the current extension service worker is alive.
 
 ## 中文说明
 
@@ -103,6 +103,8 @@ TabWake 是一个本地优先的 Chrome、Edge 桌面浏览器扩展，用来保
 - Chrome / Edge：打开扩展管理页，开启开发者模式，选择“加载已解压的扩展”，再选择本项目文件夹。
 
 ### 快速使用
+
+首次使用会按浏览器界面语言选择中文或英文；之后保留你选择的语言。
 
 1. 打开一个 `http://` 或 `https://` 页面。
 2. 点击工具栏里的 TabWake 图标。

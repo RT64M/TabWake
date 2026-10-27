@@ -4,7 +4,7 @@ import {
   createFieldValidationState,
   getNextAvailableDailyTime as getSmartNextDailyTime,
   STARTUP_LOGIC_TYPES,
-} from "../popup-view.js";
+} from "../view/shared.js";
 import {
   getPatchForAddedStartupLogic,
   getPatchForRemovedStartupLogic,
@@ -13,6 +13,11 @@ import {
 
 export function createDetailRenderer({
   applyMessages,
+  readRuleEditDraft,
+  saveRuleEditDraft,
+  clearRuleEditDraft,
+  checkLatestContentPermission,
+  restoreLatestContentPermission,
   blockLatestConfigNavigationIfNeeded,
   cancelPendingInlineConfirmation,
   clearLatestDraftForTarget,
@@ -53,7 +58,10 @@ export function createDetailRenderer({
     titleInput.type = "text";
     titleInput.spellcheck = false;
     titleInput.placeholder = state.ruleFields.title.placeholder;
-    titleInput.value = state.ruleFields.title.value;
+    const titleDraftKey = `tabwake-edit:title:${ruleTargetUrl}`;
+    const urlDraftKey = `tabwake-edit:url:${ruleTargetUrl}`;
+    titleInput.value = readRuleEditDraft(titleDraftKey, state.ruleFields.title.value);
+    titleInput.addEventListener("input", () => saveRuleEditDraft(titleDraftKey, titleInput.value));
     titleInput.dataset.targetUrl = ruleTargetUrl;
     titleInput.dataset.focusKey = "title";
     const titleError = document.createElement("span");
@@ -61,9 +69,10 @@ export function createDetailRenderer({
     titleInput.addEventListener("change", () => {
       titleInput.classList.remove("invalid");
       titleError.textContent = "";
-      saveRulePatch(ruleTargetUrl, {
-        title: titleInput.value,
-      });
+      const value = titleInput.value;
+      Promise.resolve(saveRulePatch(ruleTargetUrl, { title: value })).then(saved => {
+        if (saved) clearRuleEditDraft(titleDraftKey, value);
+      }).catch(() => showStatus("saveFailed", { error: true }));
     });
     titleField.append(titleLabel, titleInput, titleError);
 
@@ -76,13 +85,14 @@ export function createDetailRenderer({
     urlInput.type = "url";
     urlInput.spellcheck = false;
     urlInput.placeholder = state.ruleFields.targetUrl.placeholder;
-    urlInput.value = state.ruleFields.targetUrl.value;
+    urlInput.value = readRuleEditDraft(urlDraftKey, state.ruleFields.targetUrl.value);
     urlInput.title = urlInput.value;
     urlInput.dataset.targetUrl = ruleTargetUrl;
     urlInput.dataset.focusKey = "target-url";
     const urlError = document.createElement("span");
     urlError.className = "field-error";
     urlInput.addEventListener("input", () => {
+      saveRuleEditDraft(urlDraftKey, urlInput.value);
       urlInput.title = urlInput.value;
     });
     urlInput.addEventListener("change", () => {
@@ -107,7 +117,9 @@ export function createDetailRenderer({
 
         urlInput.classList.remove("invalid");
         urlError.textContent = "";
-        renameRuleInState(ruleTargetUrl, normalizedValue);
+        Promise.resolve(renameRuleInState(ruleTargetUrl, normalizedValue)).then(saved => {
+          if (saved) clearRuleEditDraft(urlDraftKey, urlInput.value);
+        }).catch(() => showStatus("saveFailed", { error: true }));
       } catch (error) {
         urlInput.classList.add("invalid");
         const errorKey = /already exists/i.test(error?.message || "")
@@ -573,6 +585,7 @@ export function createDetailRenderer({
 
   function createLatestContentConfigPanel(rule, state) {
     const config = state.latestContentConfig;
+    const error = document.createElement("span");
     const ruleTargetUrl = getRuleTargetUrl(rule);
     const panel = document.createElement("section");
     panel.className = "latest-config-panel latest-inline-split";
@@ -706,7 +719,6 @@ export function createDetailRenderer({
     });
     expectedField.append(expectedLabel, expectedInput);
 
-    const error = document.createElement("span");
     error.className = "field-error latest-config-error";
     error.textContent = config.errorMessage || "";
     if (config.errorTarget === "update-part") {
@@ -728,6 +740,31 @@ export function createDetailRenderer({
       confirmLatestContentConfig(rule);
     });
 
+    const permissionStatus = document.createElement("p");
+    permissionStatus.className = "field-error";
+    permissionStatus.setAttribute("role", "status");
+    const permissionButton = document.createElement("button");
+    permissionButton.type = "button";
+    permissionButton.className = "small-button";
+    permissionButton.textContent = message("latestRestorePermission");
+    permissionButton.hidden = true;
+    const refreshPermission = async () => {
+      try {
+        const allowed = await checkLatestContentPermission(ruleTargetUrl);
+        permissionStatus.textContent = allowed ? "" : message("latestPermissionMissing");
+        permissionButton.hidden = allowed;
+      } catch {
+        permissionStatus.textContent = message("latestPermissionMissing");
+        permissionButton.hidden = false;
+      }
+    };
+    permissionButton.addEventListener("click", () => {
+      restoreLatestContentPermission(ruleTargetUrl).then(refreshPermission).catch(() => {
+        permissionStatus.textContent = message("latestPermissionRequired");
+      });
+    });
+    refreshPermission();
+    panel.append(permissionStatus, permissionButton);
     panel.append(
       panelHeader,
       urlPick,

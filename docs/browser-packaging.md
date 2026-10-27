@@ -39,8 +39,7 @@ Build all packages:
 npm run package:stores
 ```
 
-The packaging script produces deterministic archives: building the same source
-twice yields byte-identical ZIPs.
+The packaging script checks that relative JavaScript imports and re-exports are included before creating a ZIP. It produces deterministic archives: building the same source twice yields byte-identical ZIPs.
 
 ## Version Consistency
 

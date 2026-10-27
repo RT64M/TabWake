@@ -1,4 +1,4 @@
-import { storage as defaultStorage } from "./storage.js";
+import { storage as defaultStorage, saveRuleFields, isHttpUrl } from "./storage.js";
 import { getExtensionApi } from "./extension-api.js";
 import {
   invalidateBrowserWindowStartupRuleCache,
@@ -42,6 +42,7 @@ if (getExtensionApi()?.runtime) {
   const runtimeStorage = {
     ...defaultStorage,
     loadSettings: () => defaultStorage.loadSettings(chromeApi.storage?.local),
+    saveRuleRuntime: (targetUrl, patch) => defaultStorage.saveRuleRuntime(targetUrl, patch, chromeApi.storage?.local),
     saveRules: (rules) => defaultStorage.saveRules(rules, chromeApi.storage?.local),
     saveSettings: (settings) =>
       defaultStorage.saveSettings(settings, chromeApi.storage?.local),
@@ -105,6 +106,18 @@ if (getExtensionApi()?.runtime) {
       permissionsApi: chromeApi.permissions,
     }).catch((error) => {
       console.error("TabWake alarm failed to run", error);
+    });
+  });
+
+  chromeApi.runtime.onConnect?.addListener(port => {
+    if (port.name !== "tabwake-edit") return;
+    let edit;
+    port.onMessage.addListener(message => { edit = message; });
+    port.onDisconnect.addListener(() => {
+      if (!edit || !isHttpUrl(edit.fields?.targetUrl)) return;
+      Promise.resolve().then(() => saveRuleFields(edit.targetUrl, edit.fields, chromeApi.storage?.local))
+        .then(() => syncRuntimeSchedules({ storage: runtimeStorage, alarmsApi: chromeApi.alarms, idleApi: chromeApi.idle }))
+        .catch(error => console.error("TabWake popup edit could not be committed; draft retained", error));
     });
   });
 
@@ -222,11 +235,4 @@ if (getExtensionApi()?.runtime) {
     }
   );
 
-  syncRuntimeSchedules({
-    storage: runtimeStorage,
-    alarmsApi: chromeApi.alarms,
-    idleApi: chromeApi.idle,
-  }).catch((error) => {
-    console.error("TabWake schedules failed to initialize", error);
-  });
 }

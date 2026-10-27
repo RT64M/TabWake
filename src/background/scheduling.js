@@ -33,22 +33,22 @@ async function runRuleStartupAction(
     webNavigationApi = null,
     permissionsApi = null,
     storage = null,
-    serializeLatestUpdate = true,
     now = new Date(),
+    fetchDeadline = Infinity,
   } = {}
 ) {
   const resolution = await resolveRuleOpenUrl(
     rule,
     fetchImpl,
     permissionsApi,
-    storage
+    storage,
+    fetchDeadline
   );
-  await persistLatestContentRuntimeCacheIfAdvanced(rule, resolution, storage, {
-    serialize: serializeLatestUpdate,
-  });
+  await persistLatestContentRuntimeCacheIfAdvanced(rule, resolution, storage);
   const resolvedUrl = resolution.url;
 
   if (mode === "notify") {
+    if (!notificationsApi?.create) throw new Error("Notifications unavailable");
     return createRuleNotification(
       rule,
       resolvedUrl,
@@ -119,6 +119,7 @@ export async function rebuildAlarms({
   }
 
   const preservedAlarmNames = new Set();
+  const errors = [];
 
   for (const alarm of existingAlarms.filter((item) => isExtensionAlarmName(item.name))) {
     const desiredAlarm = desiredAlarms.get(alarm.name);
@@ -137,7 +138,7 @@ export async function rebuildAlarms({
       continue;
     }
 
-    await alarmsApi.clear(alarm.name);
+    try { await alarmsApi.clear(alarm.name); } catch (error) { errors.push(error); }
   }
 
   for (const [name, desiredAlarm] of desiredAlarms) {
@@ -145,9 +146,10 @@ export async function rebuildAlarms({
       continue;
     }
 
-    await alarmsApi.create(name, desiredAlarm.info);
+    try { await alarmsApi.create(name, desiredAlarm.info); } catch (error) { errors.push(error); }
   }
 
+  if (errors.length) throw new AggregateError(errors, "Some alarms could not be rebuilt");
   return "alarms-rebuilt";
 }
 
@@ -189,13 +191,8 @@ export async function configureIdleDetection({
 }
 
 function syncRuntimeSchedules({ storage, alarmsApi, idleApi }) {
-  // 清理要排队等规则写锁，而自动追踪一次最长可占用 15 秒；不能让 popup 的
-  // rules-updated 应答等它，因此只触发不等待。
-  pruneLatestContentRuntimeCache({ storage }).catch(() => {
-    // 尽力而为，失败不影响调度重建。
-  });
-
   return Promise.all([
+    pruneLatestContentRuntimeCache({ storage }),
     rebuildAlarms({ storage, alarmsApi }),
     configureIdleDetection({
       storage,

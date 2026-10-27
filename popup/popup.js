@@ -43,6 +43,7 @@ import {
   getRuleTargetUrl,
   getRuleTitle,
   requestLatestContentPermission,
+  getHostPermissionOrigin,
   validateLatestContentDraft,
 } from "./popup-helpers.js";
 
@@ -118,6 +119,17 @@ const enqueueRulePersistence = createRulesPersistenceQueue({
     return scheduleSynced;
   },
 });
+
+function pruneRuleEditDrafts(currentRules, resetTargets = []) {
+  try {
+    const targets = new Set(currentRules.map(getRuleTargetUrl));
+    const reset = new Set(resetTargets);
+    for (const key of Object.keys(localStorage)) {
+      const target = /^tabwake-edit:(?:title|url):(.*)$/.exec(key)?.[1];
+      if (target && (!targets.has(target) || reset.has(target))) localStorage.removeItem(key);
+    }
+  } catch { showStatus("saveFailed", { error: true }); }
+}
 
 function getRulesForView() {
   return view === "detail" && draftRule ? [...rules, draftRule] : rules;
@@ -206,6 +218,20 @@ const {
 });
 
 const { createRuleDetail } = createDetailRenderer({
+  readRuleEditDraft: (key, fallback) => {
+    try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+  },
+  saveRuleEditDraft: (key, value) => {
+    try { localStorage.setItem(key, value); } catch { showStatus("saveFailed", { error: true }); }
+  },
+  clearRuleEditDraft: (key, value) => {
+    if (localStorage.getItem(key) === value) localStorage.removeItem(key);
+  },
+  checkLatestContentPermission: async targetUrl => {
+    const permissions = getExtensionApi()?.permissions;
+    return permissions?.contains ? permissions.contains({ origins: [getHostPermissionOrigin(targetUrl)] }) : true;
+  },
+  restoreLatestContentPermission: requestLatestContentPermission,
   applyMessages,
   blockLatestConfigNavigationIfNeeded,
   cancelPendingInlineConfirmation,
@@ -382,7 +408,7 @@ async function confirmLatestContentConfig(rule) {
   }
 
   // 触发时才会联网；这里只为后续触发申请 host 权限，获权后不立即探测。
-  // request() 必须在点击处理的同步阶段调用，不能先 await 权限状态查询。
+  // Firefox 要求 request() 在点击处理的同步阶段调用，不能先 await 权限状态查询。
   const permissionRequest = requestLatestContentPermission(validation.latestExampleUrl);
   let hasPermission;
 
@@ -441,6 +467,7 @@ async function persistRules(nextRules, statusKey = "saved", stableFocusTarget = 
     }
 
     rules = savedRules;
+    pruneRuleEditDrafts(savedRules);
     reconcileSelectedRuleAfterRulesChange();
     if (persistenceVersion !== latestPersistenceVersion) {
       return true;
@@ -642,6 +669,8 @@ async function applySettingsImport(mode) {
     return false;
   }
 
+  try { editPort?.postMessage(null); } catch { editPort = null; }
+  const importedTargets = settingsImportPreview.rules.map(getRuleTargetUrl);
   const result = applySettingsImportPayload(settingsImportPreview, {
     currentRules: rules,
     mode,
@@ -654,7 +683,7 @@ async function applySettingsImport(mode) {
 
   try {
     const { saved, scheduleSynced } = await enqueuePersistence(async () => {
-      const saved = await saveSettingsAndRules(result.settings, result.rules);
+      const saved = await saveSettingsAndRules(result.settings, result.rules, undefined, { resetTargets: mode === "merge" ? importedTargets : null });
       lastPersistedRules = saved.rules;
       lastPersistedSettings = saved.settings;
       const scheduleSynced = await notifyRulesUpdated();
@@ -669,6 +698,7 @@ async function applySettingsImport(mode) {
 
     settings = saved.settings;
     rules = saved.rules;
+    pruneRuleEditDrafts(saved.rules, importedTargets);
     lastPersistedSettings = saved.settings;
     settingsImportPreview = null;
     settingsImportErrorKey = "";
@@ -1138,10 +1168,31 @@ addCurrentButton.addEventListener("click", () => {
   render();
 });
 
+// A port disconnect is observed by the worker even when popup unload handlers do not run.
+let editPort = null;
+detailContent.addEventListener("input", event => {
+  if (draftRule || !event.target.matches(".rule-title-input, .rule-url-input")) return;
+  const title = detailContent.querySelector(".rule-title-input");
+  const url = detailContent.querySelector(".rule-url-input");
+  if (!title || !url) return;
+  try {
+    if (!editPort) {
+      editPort = getExtensionApi().runtime.connect({ name: "tabwake-edit" });
+      editPort.onDisconnect.addListener(() => { editPort = null; });
+    }
+    editPort.postMessage({ targetUrl: title.dataset.targetUrl, fields: { title: title.value, targetUrl: url.value } });
+  } catch { showStatus("saveFailed", { error: true }); }
+});
+
+for (const event of [getExtensionApi()?.permissions?.onAdded, getExtensionApi()?.permissions?.onRemoved]) {
+  event?.addListener(() => render());
+}
+
 async function boot() {
   const [tab, loadedSettings] = await Promise.all([getCurrentTab(), loadSettings()]);
   rules = loadedSettings.rules;
   lastPersistedRules = rules;
+  pruneRuleEditDrafts(rules);
   settings = loadedSettings.settings;
   lastPersistedSettings = settings;
   setLanguage(settings.language);
